@@ -6,6 +6,16 @@ const admin = require('firebase-admin');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+// Simple request log (for Render logs)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    console.log(
+      `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`
+    );
+  });
+  next();
+});
 
 // ✅ App ID và App Certificate (PHẢI để trong env của Render, không hardcode)
 const APP_ID = process.env.APP_ID;
