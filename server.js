@@ -487,4 +487,8 @@ app.listen(PORT, () => {
   console.log(
     `📝 Test: http://localhost:${PORT}/agora/token?userId=test123&channelName=test_channel`
   );
+<<<<<<< HEAD
 });
+=======
+});
+>>>>>>> deffe69 (Add SendGrid email integration for security alerts)
