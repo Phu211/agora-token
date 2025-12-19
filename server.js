@@ -310,6 +310,175 @@ app.post('/notify/app-notification', requireAuth, async (req, res) => {
   return res.json({ sent: true });
 });
 
+// =========================
+// SendGrid Email Setup
+// =========================
+const sgMail = require('@sendgrid/mail');
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+
+if (SENDGRID_API_KEY) {
+  sgMail.setApiKey(SENDGRID_API_KEY);
+} else {
+  console.warn('[WARN] Missing SENDGRID_API_KEY. Email endpoints will not work.');
+}
+
+// Send security alert email
+app.post('/notify/security-alert', requireAuth, async (req, res) => {
+  const { userId, activityType, details, detectedAt } = req.body || {};
+
+  if (!userId || !activityType) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // Verify user owns this userId
+  if (req.user.uid !== userId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  if (!SENDGRID_API_KEY) {
+    return res.status(500).json({ error: 'SendGrid not configured' });
+  }
+
+  try {
+    // Get user email from Firestore
+    const userDoc = await admin.firestore().doc(`users/${userId}`).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userEmail = userDoc.get('email');
+    if (!userEmail) {
+      return res.status(400).json({ error: 'User email not found' });
+    }
+
+    // Email content based on activity type
+    let subject, htmlContent, textContent;
+
+    switch (activityType) {
+      case 'newDevice':
+        subject = '🔒 Cảnh báo Bảo mật: Đăng nhập từ thiết bị mới';
+        htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #f44336; color: white; padding: 20px; text-align: center;">
+              <h1>🔒 Cảnh báo Bảo mật</h1>
+            </div>
+            <div style="background-color: #f9f9f9; padding: 20px;">
+              <h2>⚠️ Đăng nhập từ thiết bị mới</h2>
+              <p><strong>Thiết bị:</strong> ${details || 'Không xác định'}</p>
+              <p><strong>Thời gian:</strong> ${detectedAt || new Date().toISOString()}</p>
+              <p style="color: #d32f2f; font-weight: bold;">Nếu không phải bạn, vui lòng đổi mật khẩu ngay lập tức!</p>
+            </div>
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #666;">
+              <p>Email này được gửi tự động. Vui lòng không trả lời.</p>
+            </div>
+          </div>
+        `;
+        textContent = `Cảnh báo Bảo mật\n\n⚠️ Đăng nhập từ thiết bị mới\nThiết bị: ${details || 'Không xác định'}\nThời gian: ${detectedAt || new Date().toISOString()}\n\nNếu không phải bạn, vui lòng đổi mật khẩu ngay lập tức!`;
+        break;
+
+      case 'multipleFailedLogins':
+        subject = '🔒 Cảnh báo Bảo mật: Nhiều lần đăng nhập sai';
+        htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #f44336; color: white; padding: 20px; text-align: center;">
+              <h1>🔒 Cảnh báo Bảo mật</h1>
+            </div>
+            <div style="background-color: #f9f9f9; padding: 20px;">
+              <h2>⚠️ Nhiều lần đăng nhập sai</h2>
+              <p><strong>Chi tiết:</strong> ${details || 'Nhiều lần đăng nhập sai gần đây'}</p>
+              <p><strong>Thời gian:</strong> ${detectedAt || new Date().toISOString()}</p>
+              <p style="color: #d32f2f; font-weight: bold;">Nếu không phải bạn, vui lòng kiểm tra tài khoản ngay!</p>
+            </div>
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #666;">
+              <p>Email này được gửi tự động. Vui lòng không trả lời.</p>
+            </div>
+          </div>
+        `;
+        textContent = `Cảnh báo Bảo mật\n\n⚠️ Nhiều lần đăng nhập sai\nChi tiết: ${details || 'Nhiều lần đăng nhập sai gần đây'}\nThời gian: ${detectedAt || new Date().toISOString()}\n\nNếu không phải bạn, vui lòng kiểm tra tài khoản ngay!`;
+        break;
+
+      case 'passwordChanged':
+        subject = '🔒 Thông báo: Mật khẩu đã được thay đổi';
+        htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #2196F3; color: white; padding: 20px; text-align: center;">
+              <h1>🔐 Thông báo Bảo mật</h1>
+            </div>
+            <div style="background-color: #f9f9f9; padding: 20px;">
+              <h2>🔐 Mật khẩu đã được thay đổi</h2>
+              <p><strong>Thời gian:</strong> ${detectedAt || new Date().toISOString()}</p>
+              <p style="color: #d32f2f; font-weight: bold;">Nếu không phải bạn, vui lòng liên hệ hỗ trợ ngay!</p>
+            </div>
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #666;">
+              <p>Email này được gửi tự động. Vui lòng không trả lời.</p>
+            </div>
+          </div>
+        `;
+        textContent = `Thông báo Bảo mật\n\n🔐 Mật khẩu đã được thay đổi\nThời gian: ${detectedAt || new Date().toISOString()}\n\nNếu không phải bạn, vui lòng liên hệ hỗ trợ ngay!`;
+        break;
+
+      case 'emailChanged':
+        subject = '🔒 CẢNH BÁO: Email đã được thay đổi';
+        htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #f44336; color: white; padding: 20px; text-align: center;">
+              <h1>🔒 CẢNH BÁO Bảo mật</h1>
+            </div>
+            <div style="background-color: #f9f9f9; padding: 20px;">
+              <h2>📧 Email đã được thay đổi</h2>
+              <p><strong>Chi tiết:</strong> ${details || 'Email đã được thay đổi'}</p>
+              <p><strong>Thời gian:</strong> ${detectedAt || new Date().toISOString()}</p>
+              <p style="color: #d32f2f; font-weight: bold; font-size: 18px;">⚠️ CẢNH BÁO: Nếu không phải bạn, vui lòng liên hệ hỗ trợ ngay lập tức!</p>
+            </div>
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #666;">
+              <p>Email này được gửi tự động. Vui lòng không trả lời.</p>
+            </div>
+          </div>
+        `;
+        textContent = `CẢNH BÁO Bảo mật\n\n📧 Email đã được thay đổi\nChi tiết: ${details || 'Email đã được thay đổi'}\nThời gian: ${detectedAt || new Date().toISOString()}\n\n⚠️ CẢNH BÁO: Nếu không phải bạn, vui lòng liên hệ hỗ trợ ngay lập tức!`;
+        break;
+
+      default:
+        subject = '🔒 Cảnh báo Bảo mật';
+        htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #f44336; color: white; padding: 20px; text-align: center;">
+              <h1>🔒 Cảnh báo Bảo mật</h1>
+            </div>
+            <div style="background-color: #f9f9f9; padding: 20px;">
+              <p>Phát hiện hoạt động đáng ngờ trong tài khoản của bạn.</p>
+              <p><strong>Chi tiết:</strong> ${details || 'Hoạt động đáng ngờ'}</p>
+              <p><strong>Thời gian:</strong> ${detectedAt || new Date().toISOString()}</p>
+            </div>
+            <div style="text-align: center; padding: 20px; font-size: 12px; color: #666;">
+              <p>Email này được gửi tự động. Vui lòng không trả lời.</p>
+            </div>
+          </div>
+        `;
+        textContent = `Cảnh báo Bảo mật\n\nPhát hiện hoạt động đáng ngờ trong tài khoản của bạn.\nChi tiết: ${details || 'Hoạt động đáng ngờ'}\nThời gian: ${detectedAt || new Date().toISOString()}`;
+    }
+
+    // Send email via SendGrid
+    const msg = {
+      to: userEmail,
+      from: process.env.SENDGRID_FROM_EMAIL || 'haphu4192@gmail.com', // Must be verified sender
+      subject: subject,
+      text: textContent,
+      html: htmlContent,
+    };
+
+    await sgMail.send(msg);
+
+    return res.json({ sent: true, message: 'Email sent successfully' });
+  } catch (error) {
+    console.error('[ERROR] SendGrid email error:', error);
+    return res.status(500).json({
+      error: 'Failed to send email',
+      details: error.message,
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(
