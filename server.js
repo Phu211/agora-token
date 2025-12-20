@@ -244,9 +244,14 @@ app.post('/notify/call', requireAuth, async (req, res) => {
   const title = (callerName || '').toString() || 'Cuộc gọi đến';
   const body = isVideo ? 'Cuộc gọi video đến' : 'Cuộc gọi thoại đến';
 
+  // Gửi notification với priority cao và sound để nhận cuộc gọi khi app ở background/terminated
   await admin.messaging().send({
     token: token.toString(),
-    notification: { title, body },
+    notification: { 
+      title, 
+      body,
+      sound: 'default', // Phát âm thanh
+    },
     data: {
       type: 'incoming_call',
       callerId: callerId.toString(),
@@ -254,8 +259,28 @@ app.post('/notify/call', requireAuth, async (req, res) => {
       isVideo: isVideo ? 'true' : 'false',
       callId: callId.toString(),
       channelName: channelName.toString(),
+      callerName: callerName?.toString() || '',
     },
-    android: { notification: { channelId: 'synap_general' } },
+    android: { 
+      notification: { 
+        channelId: 'synap_general',
+        priority: 'high', // High priority để hiển thị ngay cả khi app terminated
+        sound: 'default',
+        visibility: 'public',
+      },
+      priority: 'high', // High priority message
+    },
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+          badge: 1,
+          'content-available': 1,
+          'mutable-content': 1,
+          'interruption-level': 'critical', // Critical interruption cho iOS
+        },
+      },
+    },
   });
 
   return res.json({ sent: true });
