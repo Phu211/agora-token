@@ -81,6 +81,33 @@ function previewBody(messageData) {
   return 'Bạn có tin nhắn mới';
 }
 
+// Kiểm tra xem cuộc trò chuyện có bị tắt thông báo cho user không
+async function isConversationMuted(conversationId, userId) {
+  if (!conversationId || !userId) return false;
+  try {
+    const muteDoc = await admin.firestore()
+      .collection('conversations')
+      .doc(conversationId)
+      .collection('mutes')
+      .doc(userId)
+      .get();
+    
+    if (!muteDoc.exists) return false;
+    
+    const data = muteDoc.data();
+    const mutedUntil = data?.mutedUntil;
+    if (!mutedUntil) return false;
+    
+    const mutedUntilDate = new Date(mutedUntil);
+    const now = new Date();
+    // Kiểm tra xem thời gian mute còn hiệu lực không
+    return mutedUntilDate > now;
+  } catch (e) {
+    console.error('Error checking mute status:', e);
+    return false; // Mặc định là không mute nếu có lỗi
+  }
+}
+
 app.get('/agora/token', (req, res) => {
   const { userId, channelName } = req.query;
 
@@ -145,6 +172,13 @@ app.post('/notify/message', requireAuth, async (req, res) => {
   }
   if (req.user.uid !== senderId) return res.status(403).json({ error: 'Forbidden' });
 
+  // Kiểm tra xem conversation có bị mute cho receiver không
+  const isMuted = await isConversationMuted(conversationId, receiverId);
+  if (isMuted) {
+    console.log(`Conversation ${conversationId} is muted for user ${receiverId}, skipping notification`);
+    return res.json({ sent: false, reason: 'muted' });
+  }
+
   const receiverDoc = await admin.firestore().doc(`users/${receiverId}`).get();
   const token = receiverDoc.get('fcmToken');
   if (!token) return res.json({ sent: false, reason: 'no_token' });
@@ -190,8 +224,13 @@ app.post('/notify/group-message', requireAuth, async (req, res) => {
   const targets = memberIds.filter((uid) => uid && uid !== senderId);
   if (!targets.length) return res.json({ sent: false, reason: 'no_targets' });
 
+  // Kiểm tra mute status cho từng user và lọc bỏ những user đã tắt thông báo
   const tokenPairs = await Promise.all(
     targets.map(async (uid) => {
+      // Kiểm tra xem conversation có bị mute cho user này không
+      const isMuted = await isConversationMuted(conversationId, uid);
+      if (isMuted) return null; // Bỏ qua user đã tắt thông báo
+      
       const u = await admin.firestore().doc(`users/${uid}`).get();
       const t = u.get('fcmToken');
       return t ? t.toString() : null;
