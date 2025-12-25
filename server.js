@@ -351,7 +351,7 @@ app.post('/notify/app-notification', requireAuth, async (req, res) => {
     reply: `${actorName} đã phản hồi bình luận của bạn`,
     follow: `${actorName} đã theo dõi bạn`,
     share: `${actorName} đã chia sẻ bài viết của bạn`,
-    mention: `${actorName} đã nhắc đến bạn`,
+    mention: `${actorName} đã gắn thẻ bạn trong bài viết`,
     friendRequest: `${actorName} đã gửi lời mời kết bạn`,
   };
   const body = bodyByType[notificationType] || 'Bạn có thông báo mới';
