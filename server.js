@@ -278,13 +278,19 @@ app.post('/notify/call', requireAuth, async (req, res) => {
 
   const receiverDoc = await admin.firestore().doc(`users/${recipientUserId}`).get();
   const token = receiverDoc.get('fcmToken');
-  if (!token) return res.json({ sent: false, reason: 'no_token' });
+  if (!token) {
+    console.log(`No FCM token found for user ${recipientUserId}. User needs to log in to receive calls when app is closed.`);
+    return res.json({ sent: false, reason: 'no_token' });
+  }
+  
+  console.log(`Sending call notification to user ${recipientUserId} with token: ${token.substring(0, 20)}...`);
 
   const title = (callerName || '').toString() || 'Cuộc gọi đến';
   const body = isVideo ? 'Cuộc gọi video đến' : 'Cuộc gọi thoại đến';
 
   // Gửi notification với priority cao và sound để nhận cuộc gọi khi app ở background/terminated
-  await admin.messaging().send({
+  // Đảm bảo notification hiển thị ngay cả khi app terminated
+  const message = {
     token: token.toString(),
     notification: { 
       title, 
@@ -310,10 +316,16 @@ app.post('/notify/call', requireAuth, async (req, res) => {
         visibility: 'public',
         // Thêm actions cho notification
         clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+        // Đảm bảo notification hiển thị ngay cả khi app terminated
+        notificationCount: 1,
+        // Thêm tag để có thể update notification
+        tag: `call_${callId}`,
       },
       priority: 'high', // High priority message
       // Đảm bảo notification hiển thị ngay cả khi app terminated
       ttl: 3600000, // 1 hour TTL
+      // Direct boot ok để notification hiển thị ngay cả khi device khởi động lại
+      directBootOk: true,
     },
     apns: {
       payload: {
@@ -328,14 +340,38 @@ app.post('/notify/call', requireAuth, async (req, res) => {
             title: title,
             body: body,
           },
+          // Thêm category để có thể xử lý action buttons
+          category: 'INCOMING_CALL',
         },
       },
       // Thêm headers để đảm bảo notification được gửi ngay
       headers: {
-        'apns-priority': '10', // High priority cho iOS
+        'apns-priority': '10', // High priority cho iOS (0-10, 10 là cao nhất)
+        'apns-push-type': 'alert', // Đảm bảo notification hiển thị ngay
       },
     },
-  });
+    // Web push config (nếu có)
+    webpush: {
+      notification: {
+        title: title,
+        body: body,
+        icon: '/icon.png',
+        badge: '/badge.png',
+        requireInteraction: true, // Yêu cầu user tương tác
+      },
+      fcmOptions: {
+        link: '/call',
+      },
+    },
+  };
+
+  try {
+    await admin.messaging().send(message);
+    console.log(`Call notification sent successfully to user ${recipientUserId}`);
+  } catch (error) {
+    console.error(`Error sending call notification: ${error}`);
+    // Không throw để không làm gián đoạn cuộc gọi
+  }
 
   return res.json({ sent: true });
 });
