@@ -299,15 +299,21 @@ app.post('/notify/call', requireAuth, async (req, res) => {
       callId: callId.toString(),
       channelName: channelName.toString(),
       callerName: callerName?.toString() || '',
+      // Thêm click_action để đảm bảo notification có thể tap được
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
     },
     android: { 
       notification: { 
-        channelId: 'synap_general',
-        priority: 'high', // High priority để hiển thị ngay cả khi app terminated
+        channelId: 'synap_calls', // Dùng channel riêng cho calls với priority cao nhất
+        priority: 'max', // Max priority để hiển thị ngay cả khi app terminated
         sound: 'default',
         visibility: 'public',
+        // Thêm actions cho notification
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
       },
       priority: 'high', // High priority message
+      // Đảm bảo notification hiển thị ngay cả khi app terminated
+      ttl: 3600000, // 1 hour TTL
     },
     apns: {
       payload: {
@@ -317,7 +323,16 @@ app.post('/notify/call', requireAuth, async (req, res) => {
           'content-available': 1,
           'mutable-content': 1,
           'interruption-level': 'critical', // Critical interruption cho iOS
+          // Đảm bảo notification hiển thị ngay cả khi app terminated
+          alert: {
+            title: title,
+            body: body,
+          },
         },
+      },
+      // Thêm headers để đảm bảo notification được gửi ngay
+      headers: {
+        'apns-priority': '10', // High priority cho iOS
       },
     },
   });
