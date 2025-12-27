@@ -164,7 +164,7 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 // Push gateway endpoints (Render free)
 // =========================
 
-// Direct message push
+// Direct message push - Tối ưu hóa: trả về response ngay, gửi notification bất đồng bộ
 app.post('/notify/message', requireAuth, async (req, res) => {
   const { messageId, senderId, receiverId, conversationId } = req.body || {};
   if (!messageId || !senderId || !receiverId || !conversationId) {
@@ -172,46 +172,58 @@ app.post('/notify/message', requireAuth, async (req, res) => {
   }
   if (req.user.uid !== senderId) return res.status(403).json({ error: 'Forbidden' });
 
-  // Kiểm tra xem conversation có bị mute cho receiver không
-  const isMuted = await isConversationMuted(conversationId, receiverId);
-  if (isMuted) {
-    console.log(`Conversation ${conversationId} is muted for user ${receiverId}, skipping notification`);
-    return res.json({ sent: false, reason: 'muted' });
-  }
+  // ✅ Trả về response ngay lập tức
+  res.json({ sent: true, queued: true });
 
-  const receiverDoc = await admin.firestore().doc(`users/${receiverId}`).get();
-  const token = receiverDoc.get('fcmToken');
-  if (!token) return res.json({ sent: false, reason: 'no_token' });
+  // ✅ Gửi notification bất đồng bộ
+  (async () => {
+    try {
+      // Kiểm tra mute và lấy token/sender info song song để tối ưu
+      const [muteCheck, receiverDoc, senderDoc] = await Promise.all([
+        isConversationMuted(conversationId, receiverId),
+        admin.firestore().doc(`users/${receiverId}`).get(),
+        admin.firestore().doc(`users/${senderId}`).get(),
+      ]);
 
-  let senderName = 'Synap';
-  try {
-    const senderDoc = await admin.firestore().doc(`users/${senderId}`).get();
-    senderName = senderDoc.get('fullName') || senderDoc.get('username') || senderName;
-  } catch (_) {}
+      if (muteCheck) {
+        console.log(`Conversation ${conversationId} is muted for user ${receiverId}`);
+        return;
+      }
 
-  let body = 'Bạn có tin nhắn mới';
-  try {
-    const msgDoc = await admin.firestore().doc(`messages/${messageId}`).get();
-    if (msgDoc.exists) body = previewBody(msgDoc.data() || {});
-  } catch (_) {}
+      const token = receiverDoc.get('fcmToken');
+      if (!token) {
+        console.log(`No FCM token for user ${receiverId}`);
+        return;
+      }
 
-  await admin.messaging().send({
-    token: token.toString(),
-    notification: { title: senderName, body },
-    data: {
-      type: 'chat_message',
-      senderId: senderId.toString(),
-      receiverId: receiverId.toString(),
-      conversationId: conversationId.toString(),
-      messageId: messageId.toString(),
-    },
-    android: { notification: { channelId: 'synap_general' } },
-  });
+      const senderName = senderDoc.get('fullName') || senderDoc.get('username') || 'Synap';
+      
+      // Lấy message preview (có thể bỏ qua nếu không cần thiết để tăng tốc)
+      let body = 'Bạn có tin nhắn mới';
+      try {
+        const msgDoc = await admin.firestore().doc(`messages/${messageId}`).get();
+        if (msgDoc.exists) body = previewBody(msgDoc.data() || {});
+      } catch (_) {}
 
-  return res.json({ sent: true });
+      await admin.messaging().send({
+        token: token.toString(),
+        notification: { title: senderName, body },
+        data: {
+          type: 'chat_message',
+          senderId: senderId.toString(),
+          receiverId: receiverId.toString(),
+          conversationId: conversationId.toString(),
+          messageId: messageId.toString(),
+        },
+        android: { notification: { channelId: 'synap_general' } },
+      });
+    } catch (error) {
+      console.error(`Error sending message notification: ${error}`);
+    }
+  })();
 });
 
-// Group message push
+// Group message push - Tối ưu hóa: trả về response ngay, gửi notification bất đồng bộ
 app.post('/notify/group-message', requireAuth, async (req, res) => {
   const { messageId, senderId, groupId, conversationId } = req.body || {};
   if (!messageId || !senderId || !groupId || !conversationId) {
@@ -219,55 +231,68 @@ app.post('/notify/group-message', requireAuth, async (req, res) => {
   }
   if (req.user.uid !== senderId) return res.status(403).json({ error: 'Forbidden' });
 
-  const groupDoc = await admin.firestore().doc(`groups/${groupId}`).get();
-  const memberIds = (groupDoc.get('memberIds') || []).map((x) => x.toString());
-  const targets = memberIds.filter((uid) => uid && uid !== senderId);
-  if (!targets.length) return res.json({ sent: false, reason: 'no_targets' });
+  // ✅ Trả về response ngay lập tức
+  res.json({ sent: true, queued: true });
 
-  // Kiểm tra mute status cho từng user và lọc bỏ những user đã tắt thông báo
-  const tokenPairs = await Promise.all(
-    targets.map(async (uid) => {
-      // Kiểm tra xem conversation có bị mute cho user này không
-      const isMuted = await isConversationMuted(conversationId, uid);
-      if (isMuted) return null; // Bỏ qua user đã tắt thông báo
-      
-      const u = await admin.firestore().doc(`users/${uid}`).get();
-      const t = u.get('fcmToken');
-      return t ? t.toString() : null;
-    })
-  );
-  const tokens = tokenPairs.filter(Boolean);
-  if (!tokens.length) return res.json({ sent: false, reason: 'no_token' });
+  // ✅ Gửi notification bất đồng bộ
+  (async () => {
+    try {
+      // Lấy group info và sender info song song
+      const [groupDoc, senderDoc] = await Promise.all([
+        admin.firestore().doc(`groups/${groupId}`).get(),
+        admin.firestore().doc(`users/${senderId}`).get(),
+      ]);
 
-  let senderName = 'Synap';
-  try {
-    const senderDoc = await admin.firestore().doc(`users/${senderId}`).get();
-    senderName = senderDoc.get('fullName') || senderDoc.get('username') || senderName;
-  } catch (_) {}
+      const memberIds = (groupDoc.get('memberIds') || []).map((x) => x.toString());
+      const targets = memberIds.filter((uid) => uid && uid !== senderId);
+      if (!targets.length) return;
 
-  let body = 'Bạn có tin nhắn mới';
-  try {
-    const msgDoc = await admin.firestore().doc(`messages/${messageId}`).get();
-    if (msgDoc.exists) body = previewBody(msgDoc.data() || {});
-  } catch (_) {}
+      const senderName = senderDoc.get('fullName') || senderDoc.get('username') || 'Synap';
 
-  await admin.messaging().sendEachForMulticast({
-    tokens,
-    notification: { title: senderName, body },
-    data: {
-      type: 'group_chat_message',
-      senderId: senderId.toString(),
-      groupId: groupId.toString(),
-      conversationId: conversationId.toString(),
-      messageId: messageId.toString(),
-    },
-    android: { notification: { channelId: 'synap_general' } },
-  });
+      // ✅ Tối ưu: Lấy tất cả user docs song song thay vì từng cái một
+      const userDocs = await Promise.all(
+        targets.map((uid) => admin.firestore().doc(`users/${uid}`).get())
+      );
 
-  return res.json({ sent: true, tokens: tokens.length });
+      // ✅ Kiểm tra mute và lấy tokens song song
+      const tokenPairs = await Promise.all(
+        targets.map(async (uid, index) => {
+          const isMuted = await isConversationMuted(conversationId, uid);
+          if (isMuted) return null;
+          const token = userDocs[index].get('fcmToken');
+          return token ? token.toString() : null;
+        })
+      );
+
+      const tokens = tokenPairs.filter(Boolean);
+      if (!tokens.length) return;
+
+      // Lấy message preview (có thể bỏ qua để tăng tốc)
+      let body = 'Bạn có tin nhắn mới';
+      try {
+        const msgDoc = await admin.firestore().doc(`messages/${messageId}`).get();
+        if (msgDoc.exists) body = previewBody(msgDoc.data() || {});
+      } catch (_) {}
+
+      await admin.messaging().sendEachForMulticast({
+        tokens,
+        notification: { title: senderName, body },
+        data: {
+          type: 'group_chat_message',
+          senderId: senderId.toString(),
+          groupId: groupId.toString(),
+          conversationId: conversationId.toString(),
+          messageId: messageId.toString(),
+        },
+        android: { notification: { channelId: 'synap_general' } },
+      });
+    } catch (error) {
+      console.error(`Error sending group message notification: ${error}`);
+    }
+  })();
 });
 
-// Incoming call push
+// Incoming call push - Tối ưu hóa: trả về response ngay, gửi notification bất đồng bộ
 app.post('/notify/call', requireAuth, async (req, res) => {
   const { callId, callerId, recipientUserId, channelName, isVideo, callerName } =
     req.body || {};
@@ -276,107 +301,83 @@ app.post('/notify/call', requireAuth, async (req, res) => {
   }
   if (req.user.uid !== callerId) return res.status(403).json({ error: 'Forbidden' });
 
-  const receiverDoc = await admin.firestore().doc(`users/${recipientUserId}`).get();
-  const token = receiverDoc.get('fcmToken');
-  if (!token) {
-    console.log(`No FCM token found for user ${recipientUserId}. User needs to log in to receive calls when app is closed.`);
-    return res.json({ sent: false, reason: 'no_token' });
-  }
-  
-  console.log(`Sending call notification to user ${recipientUserId} with token: ${token.substring(0, 20)}...`);
+  // ✅ Trả về response ngay lập tức để không block client
+  res.json({ sent: true, queued: true });
 
-  const title = (callerName || '').toString() || 'Cuộc gọi đến';
-  const body = isVideo ? 'Cuộc gọi video đến' : 'Cuộc gọi thoại đến';
+  // ✅ Gửi notification bất đồng bộ (không chờ)
+  (async () => {
+    try {
+      // Lấy FCM token từ Firestore
+      const receiverDoc = await admin.firestore().doc(`users/${recipientUserId}`).get();
+      const token = receiverDoc.get('fcmToken');
+      if (!token) {
+        console.log(`No FCM token found for user ${recipientUserId}`);
+        return;
+      }
 
-  // Gửi notification với priority cao và sound để nhận cuộc gọi khi app ở background/terminated
-  // Đảm bảo notification hiển thị ngay cả khi app terminated
-  const message = {
-    token: token.toString(),
-    notification: { 
-      title, 
-      body,
-      sound: 'default', // Phát âm thanh
-    },
-    data: {
-      type: 'incoming_call',
-      callerId: callerId.toString(),
-      recipientUserId: recipientUserId.toString(),
-      isVideo: isVideo ? 'true' : 'false',
-      callId: callId.toString(),
-      channelName: channelName.toString(),
-      callerName: callerName?.toString() || '',
-      // Thêm click_action để đảm bảo notification có thể tap được
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    },
-    android: { 
-      notification: { 
-        channelId: 'synap_calls', // Dùng channel riêng cho calls với priority cao nhất
-        priority: 'max', // Max priority để hiển thị ngay cả khi app terminated
-        sound: 'default',
-        visibility: 'public',
-        // Thêm actions cho notification
-        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
-        // Đảm bảo notification hiển thị ngay cả khi app terminated
-        notificationCount: 1,
-        // Thêm tag để có thể update notification
-        tag: `call_${callId}`,
-      },
-      priority: 'high', // High priority message
-      // Đảm bảo notification hiển thị ngay cả khi app terminated
-      ttl: 3600000, // 1 hour TTL
-      // Direct boot ok để notification hiển thị ngay cả khi device khởi động lại
-      directBootOk: true,
-    },
-    apns: {
-      payload: {
-        aps: {
+      const title = (callerName || '').toString() || 'Cuộc gọi đến';
+      const body = isVideo ? 'Cuộc gọi video đến' : 'Cuộc gọi thoại đến';
+
+      // ✅ Tối ưu hóa payload: chỉ giữ các field cần thiết, loại bỏ webpush (không cần cho mobile)
+      const message = {
+        token: token.toString(),
+        notification: { 
+          title, 
+          body,
           sound: 'default',
-          badge: 1,
-          'content-available': 1,
-          'mutable-content': 1,
-          'interruption-level': 'critical', // Critical interruption cho iOS
-          // Đảm bảo notification hiển thị ngay cả khi app terminated
-          alert: {
-            title: title,
-            body: body,
-          },
-          // Thêm category để có thể xử lý action buttons
-          category: 'INCOMING_CALL',
         },
-      },
-      // Thêm headers để đảm bảo notification được gửi ngay
-      headers: {
-        'apns-priority': '10', // High priority cho iOS (0-10, 10 là cao nhất)
-        'apns-push-type': 'alert', // Đảm bảo notification hiển thị ngay
-      },
-    },
-    // Web push config (nếu có)
-    webpush: {
-      notification: {
-        title: title,
-        body: body,
-        icon: '/icon.png',
-        badge: '/badge.png',
-        requireInteraction: true, // Yêu cầu user tương tác
-      },
-      fcmOptions: {
-        link: '/call',
-      },
-    },
-  };
+        data: {
+          type: 'incoming_call',
+          callerId: callerId.toString(),
+          recipientUserId: recipientUserId.toString(),
+          isVideo: isVideo ? 'true' : 'false',
+          callId: callId.toString(),
+          channelName: channelName.toString(),
+          callerName: callerName?.toString() || '',
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: { 
+          notification: { 
+            channelId: 'synap_calls',
+            priority: 'max',
+            sound: 'default',
+            visibility: 'public',
+            clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+            tag: `call_${callId}`,
+          },
+          priority: 'high',
+          ttl: 3600000,
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: 1,
+              'content-available': 1,
+              'interruption-level': 'critical',
+              alert: {
+                title: title,
+                body: body,
+              },
+              category: 'INCOMING_CALL',
+            },
+          },
+          headers: {
+            'apns-priority': '10',
+            'apns-push-type': 'alert',
+          },
+        },
+      };
 
-  try {
-    await admin.messaging().send(message);
-    console.log(`Call notification sent successfully to user ${recipientUserId}`);
-  } catch (error) {
-    console.error(`Error sending call notification: ${error}`);
-    // Không throw để không làm gián đoạn cuộc gọi
-  }
-
-  return res.json({ sent: true });
+      await admin.messaging().send(message);
+      console.log(`Call notification sent to user ${recipientUserId}`);
+    } catch (error) {
+      console.error(`Error sending call notification: ${error}`);
+    }
+  })();
 });
 
-// App notification push (like/follow/friendRequest...)
+// App notification push (like/follow/friendRequest...) - Tối ưu hóa
 app.post('/notify/app-notification', requireAuth, async (req, res) => {
   const { notificationId, userId, actorId, notificationType, postId, commentId } =
     req.body || {};
@@ -385,44 +386,55 @@ app.post('/notify/app-notification', requireAuth, async (req, res) => {
   }
   if (req.user.uid !== actorId) return res.status(403).json({ error: 'Forbidden' });
 
-  const receiverDoc = await admin.firestore().doc(`users/${userId}`).get();
-  const token = receiverDoc.get('fcmToken');
-  if (!token) return res.json({ sent: false, reason: 'no_token' });
+  // ✅ Trả về response ngay lập tức
+  res.json({ sent: true, queued: true });
 
-  let actorName = 'Ai đó';
-  try {
-    const actorDoc = await admin.firestore().doc(`users/${actorId}`).get();
-    actorName = actorDoc.get('fullName') || actorDoc.get('username') || actorName;
-  } catch (_) {}
+  // ✅ Gửi notification bất đồng bộ
+  (async () => {
+    try {
+      // Lấy token và actor info song song
+      const [receiverDoc, actorDoc] = await Promise.all([
+        admin.firestore().doc(`users/${userId}`).get(),
+        admin.firestore().doc(`users/${actorId}`).get(),
+      ]);
 
-  // Reuse the same texts as client UI
-  const bodyByType = {
-    like: `${actorName} đã thích bài viết của bạn`,
-    comment: `${actorName} đã bình luận bài viết của bạn`,
-    reply: `${actorName} đã phản hồi bình luận của bạn`,
-    follow: `${actorName} đã theo dõi bạn`,
-    share: `${actorName} đã chia sẻ bài viết của bạn`,
-    mention: `${actorName} đã gắn thẻ bạn trong bài viết`,
-    friendRequest: `${actorName} đã gửi lời mời kết bạn`,
-  };
-  const body = bodyByType[notificationType] || 'Bạn có thông báo mới';
+      const token = receiverDoc.get('fcmToken');
+      if (!token) {
+        console.log(`No FCM token for user ${userId}`);
+        return;
+      }
 
-  await admin.messaging().send({
-    token: token.toString(),
-    notification: { title: 'Synap', body },
-    data: {
-      type: 'app_notification',
-      notificationId: notificationId.toString(),
-      notificationType: notificationType.toString(),
-      userId: userId.toString(),
-      actorId: actorId.toString(),
-      postId: (postId || '').toString(),
-      commentId: (commentId || '').toString(),
-    },
-    android: { notification: { channelId: 'synap_general' } },
-  });
+      const actorName = actorDoc.get('fullName') || actorDoc.get('username') || 'Ai đó';
 
-  return res.json({ sent: true });
+      const bodyByType = {
+        like: `${actorName} đã thích bài viết của bạn`,
+        comment: `${actorName} đã bình luận bài viết của bạn`,
+        reply: `${actorName} đã phản hồi bình luận của bạn`,
+        follow: `${actorName} đã theo dõi bạn`,
+        share: `${actorName} đã chia sẻ bài viết của bạn`,
+        mention: `${actorName} đã gắn thẻ bạn trong bài viết`,
+        friendRequest: `${actorName} đã gửi lời mời kết bạn`,
+      };
+      const body = bodyByType[notificationType] || 'Bạn có thông báo mới';
+
+      await admin.messaging().send({
+        token: token.toString(),
+        notification: { title: 'Synap', body },
+        data: {
+          type: 'app_notification',
+          notificationId: notificationId.toString(),
+          notificationType: notificationType.toString(),
+          userId: userId.toString(),
+          actorId: actorId.toString(),
+          postId: (postId || '').toString(),
+          commentId: (commentId || '').toString(),
+        },
+        android: { notification: { channelId: 'synap_general' } },
+      });
+    } catch (error) {
+      console.error(`Error sending app notification: ${error}`);
+    }
+  })();
 });
 
 // =========================
