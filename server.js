@@ -543,6 +543,95 @@ app.post('/notify/security-alert', requireAuth, async (req, res) => {
   }
 });
 
+// Send welcome email after registration
+app.post('/notify/welcome-email', async (req, res) => {
+  const { userId, email, fullName, username } = req.body || {};
+
+  if (!userId || !email) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  if (!SENDGRID_API_KEY) {
+    return res.status(500).json({ error: 'SendGrid not configured' });
+  }
+
+  try {
+    const subject = '🎉 Chào mừng bạn đến với Synap!';
+    const displayName = fullName || username || 'Bạn';
+    
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+          <h1 style="margin: 0; font-size: 32px;">🎉 Chào mừng đến với Synap!</h1>
+        </div>
+        <div style="background-color: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-top: none;">
+          <p style="font-size: 18px; color: #333; margin-bottom: 20px;">Xin chào <strong>${displayName}</strong>!</p>
+          <p style="color: #666; line-height: 1.6; margin-bottom: 20px;">
+            Cảm ơn bạn đã tham gia cộng đồng Synap! Chúng tôi rất vui mừng được chào đón bạn.
+          </p>
+          
+          <div style="background-color: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h2 style="color: #667eea; margin-top: 0; font-size: 20px;">🚀 Bắt đầu khám phá:</h2>
+            <ul style="color: #666; line-height: 1.8; padding-left: 20px;">
+              <li><strong>📝 Đăng bài viết:</strong> Chia sẻ khoảnh khắc của bạn với bạn bè</li>
+              <li><strong>📖 Stories:</strong> Tạo stories 24h để kể câu chuyện của bạn</li>
+              <li><strong>💬 Nhắn tin:</strong> Kết nối và trò chuyện với bạn bè</li>
+              <li><strong>📞 Cuộc gọi:</strong> Gọi video/voice với người thân</li>
+              <li><strong>👥 Kết bạn:</strong> Tìm và kết nối với những người bạn mới</li>
+            </ul>
+          </div>
+
+          <div style="background-color: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196F3;">
+            <p style="color: #1976d2; margin: 0; font-weight: bold;">📧 Xác thực email của bạn</p>
+            <p style="color: #666; margin: 10px 0 0 0; font-size: 14px;">
+              Để đảm bảo tài khoản của bạn được bảo mật, vui lòng xác thực email bằng cách click vào link trong email xác thực mà chúng tôi đã gửi cho bạn.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="#" style="background-color: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+              Khám phá Synap ngay
+            </a>
+          </div>
+
+          <p style="color: #999; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
+            Nếu bạn có bất kỳ câu hỏi nào, đừng ngần ngại liên hệ với chúng tôi. Chúng tôi luôn sẵn sàng hỗ trợ bạn!
+          </p>
+        </div>
+        <div style="background-color: #f9f9f9; padding: 20px; text-align: center; border-radius: 0 0 10px 10px; border: 1px solid #e0e0e0; border-top: none;">
+          <p style="margin: 0; font-size: 12px; color: #666;">
+            Email này được gửi tự động. Vui lòng không trả lời email này.
+          </p>
+          <p style="margin: 10px 0 0 0; font-size: 12px; color: #999;">
+            © ${new Date().getFullYear()} Synap. Tất cả quyền được bảo lưu.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const textContent = `Chào mừng đến với Synap!\n\nXin chào ${displayName}!\n\nCảm ơn bạn đã tham gia cộng đồng Synap! Chúng tôi rất vui mừng được chào đón bạn.\n\nBắt đầu khám phá:\n- Đăng bài viết: Chia sẻ khoảnh khắc của bạn với bạn bè\n- Stories: Tạo stories 24h để kể câu chuyện của bạn\n- Nhắn tin: Kết nối và trò chuyện với bạn bè\n- Cuộc gọi: Gọi video/voice với người thân\n- Kết bạn: Tìm và kết nối với những người bạn mới\n\nXác thực email của bạn:\nĐể đảm bảo tài khoản của bạn được bảo mật, vui lòng xác thực email bằng cách click vào link trong email xác thực mà chúng tôi đã gửi cho bạn.\n\nNếu bạn có bất kỳ câu hỏi nào, đừng ngần ngại liên hệ với chúng tôi.\n\n© ${new Date().getFullYear()} Synap. Tất cả quyền được bảo lưu.`;
+
+    // Send email via SendGrid
+    const msg = {
+      to: email,
+      from: process.env.SENDGRID_FROM_EMAIL || 'haphu4192@gmail.com', // Must be verified sender
+      subject: subject,
+      text: textContent,
+      html: htmlContent,
+    };
+
+    await sgMail.send(msg);
+
+    return res.json({ sent: true, message: 'Welcome email sent successfully' });
+  } catch (error) {
+    console.error('[ERROR] SendGrid welcome email error:', error);
+    return res.status(500).json({
+      error: 'Failed to send welcome email',
+      details: error.message,
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(
